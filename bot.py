@@ -7,13 +7,13 @@ from flask import Flask
 from threading import Thread
 
 
-TOKEN = os.getenv("TOKEN")
+TOKEN =  os.getenv("TOKEN")
 from html import escape  # <-- shu qatorda qo‘shiladi
 # =========================
 # CONFIG
 # =========================
 ADMIN_ID = 8066401832
-WEB_APP_URL = "https://bxpoff.netlify.app/"
+ORDER_CHANNEL = "@bxpoffsmm"
 
 bot = TeleBot(TOKEN, parse_mode="HTML")
 admin_add_stars = {}
@@ -107,6 +107,11 @@ def admin_menu():
         types.InlineKeyboardButton("📢 Majburiy obuna", callback_data="admin_force")
     )
     return kb
+def get_user_text(user):
+    if user.username:
+        return f"@{user.username}"
+    else:
+        return f'<a href="tg://user?id={user.id}">{escape(user.first_name)}</a>'
 
 @bot.message_handler(commands=["admin"])
 def admin_cmd(message):
@@ -217,7 +222,7 @@ def admin_text(message):
 def main_menu():
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton("🛍 Xizmatlar", web_app=types.WebAppInfo(url=WEB_APP_URL))
+        types.InlineKeyboardButton("✨ Haftalik konkurs", callback_data="week")
     )
     kb.add(
         types.InlineKeyboardButton("💳 Hisob", callback_data="account"),
@@ -318,7 +323,7 @@ def payment_warning(call):
     )
     bot.send_message(
         uid,
-        "⚠️ Diqqat! Bu faqat O‘qish kursi yoki Premium uchun to‘lovdir.\n"
+        "⚠️ Diqqat! Bu faqat Premium uchun to‘lovdir.\n"
         "Shuni davom ettirmoqchimisiz?",
         reply_markup=kb
     )
@@ -641,23 +646,58 @@ def check_sub_callback(call):
 # REFERAL BONUS FUNKSIYASI
 # =========================
 def give_referal_bonus(uid, referer_id):
-    if not referer_id:
+    if not referer_id or referer_id == uid:
         return
 
     with get_db() as db:
         cur = db.cursor()
+
         cur.execute("SELECT referer_id FROM users WHERE user_id=?", (uid,))
         row = cur.fetchone()
-        saved_ref = row[0] if row else None
 
-        if saved_ref is None and referer_id != uid:
+        if row and row[0] is None:
             cur.execute("UPDATE users SET referer_id=? WHERE user_id=?", (referer_id, uid))
             cur.execute("UPDATE users SET stars = stars + 3 WHERE user_id=?", (referer_id,))
+            cur.execute(
+                "INSERT INTO referrals (user_id, referer_id) VALUES (?, ?)",
+                (uid, referer_id)
+            )
             db.commit()
+
             bot.send_message(
                 referer_id,
                 "👥 Yangi referal!\n⭐ Sizga +3 Stars berildi"
             )
+@bot.callback_query_handler(func=lambda c: c.data == "week")
+def weekly_contest(call):
+    week_ago = int(time.time()) - 604800  # 7 kun
+
+    with get_db() as db:
+        cur = db.cursor()
+        cur.execute("""
+            SELECT referer_id, COUNT(*) as cnt
+            FROM referrals
+            GROUP BY referer_id
+            ORDER BY cnt DESC
+            LIMIT 5
+        """)
+        rows = cur.fetchall()
+
+    if not rows:
+        bot.send_message(call.from_user.id, "😕 Hozircha konkurs ishtirokchilari yo‘q")
+        return
+
+    text = "🏆 <b>HAFTALIK REFERAL KONKURS</b>\n\n"
+
+    for i, (uid, cnt) in enumerate(rows, start=1):
+        text += f"{i}. <code>{uid}</code> — <b>{cnt}</b> ta odam\n"
+
+    text += (
+        "\n🥇 1-o‘rin: ⭐ 15 Stars\n"
+        "📅 Har hafta yakshanba yakunlanadi"
+    )
+
+    bot.send_message(call.from_user.id, text)
 
 # =========================
 # CALLBACKS
@@ -727,6 +767,7 @@ def callbacks(call):
 
         # STARS BUY CHECK
         elif call.data.startswith("stars_"):
+
             _, amount, emoji = call.data.split("_")
             amount = int(amount)
 
@@ -744,13 +785,30 @@ def callbacks(call):
                     "📦 Yaqin orada yuboriladi."
                 )
                 # ADMIN XABAR
+                user = call.from_user
+                user_text = get_user_text(user)
+
+                order_text = (
+                    "🛒 <b>Yangi Stars buyurtma!</b>\n\n"
+                    f"👤 User: {user_text}\n"
+                    f"🆔 ID: <code>{uid}</code>\n"
+                    f"⭐ Stars: <b>{amount}</b> {emoji}"
+                )
+
+                # ADMIN
                 bot.send_message(
                     ADMIN_ID,
-                    f"🛒 <b>Yangi buyurtma!</b>\n\n"
-                    f"👤 Ism: {name}\n"
-                    f"🆔 ID: {uid}\n"
-                    f"⭐ Stars: {amount} {emoji}"
+                    order_text,
+                    parse_mode="HTML"
                 )
+
+                # KANAL
+                bot.send_message(
+                    ORDER_CHANNEL,
+                    order_text,
+                    parse_mode="HTML"
+                )
+
             else:
                 bot.send_message(
                     uid,
